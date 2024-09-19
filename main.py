@@ -96,9 +96,14 @@ def signup(data: SignupData):
 @app.get('/precints')
 def get_all_precints():
     try:
-        users_ref = db.collection(VOTERS_COLLECTION)  
+        users_ref = db.collection(VOTERS_COLLECTION)
         docs = users_ref.stream()
-        return JSONResponse(content=docs, status_code=200)
+
+        precincts = []
+        for doc in docs:
+            precincts.append(doc.to_dict())  # Convert document to dictionary
+
+        return JSONResponse(content={"precincts": precincts}, status_code=200)
     except Exception as e:
         print(f"Error: {e}")
         return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
