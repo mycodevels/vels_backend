@@ -93,6 +93,22 @@ def signup(data: SignupData):
     return JSONResponse(content={"message": "Signup successful"}, status_code=201)
 
 
+@app.get('/precints')
+def get_all_precints():
+    try:
+        users_ref = db.collection(VOTERS_COLLECTION)  
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            users.append(user_data)
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
 @app.get('/users')
 def get_all_users():
     try:
