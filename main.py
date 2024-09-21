@@ -5,9 +5,10 @@ from fastapi.responses import JSONResponse
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
+from datetime import datetime
 from nltk import ne_chunk, pos_tag, word_tokenize
 from nltk.tree import Tree
-
+import logging
 import pdfplumber
 import re
 import nltk
@@ -20,6 +21,8 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 USERS_COLLECTION = "users"
 VOTERS_COLLECTION ="Voters"
+ELECTION_COLLECTION ="Election"
+ALLOCATE_COLLECTION ="allocate"
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +45,19 @@ class SignupData(BaseModel):
     password: str
     selectedMode: str
     contact: str
+
+class ElectionData(BaseModel):
+    title: str
+    electionId: str
+    surveyorStartDate: str
+    surveyorEndDate: str
+    resultDate: str
+class AllocateData(BaseModel):
+    electionId: str
+    surveyorId: str
+    precintList: str
+
+
 
 @app.post('/signin')
 def signin(data: SigninData):
@@ -93,21 +109,6 @@ def signup(data: SignupData):
     return JSONResponse(content={"message": "Signup successful"}, status_code=201)
 
 
-@app.get('/precints')
-def get_all_precints():
-    try:
-        users_ref = db.collection(VOTERS_COLLECTION)
-        docs = users_ref.stream()
-
-        precincts = []
-        for doc in docs:
-            precincts.append(doc.to_dict())  # Convert document to dictionary
-
-        return JSONResponse(content={"precincts": precincts}, status_code=200)
-    except Exception as e:
-        print(f"Error: {e}")
-        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
-
 @app.get('/users')
 def get_all_users():
     try:
@@ -125,6 +126,22 @@ def get_all_users():
         print(f"Error: {e}")
         return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
 
+
+@app.get('/precints')
+def get_all_precints():
+    try:
+        # Fetch all documents from the collection
+        users_ref = db.collection(VOTERS_COLLECTION)
+        docs = users_ref.stream()
+        logging.info(f"users_ref: {users_ref}")
+        # Extract document IDs
+        doc_ids = [doc.id for doc in docs]
+
+        return JSONResponse(content={"doc_ids": doc_ids}, status_code=200)
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve document IDs"}, status_code=500)
 
 class AddressUpdateRequest(BaseModel):
     addressline2: str
@@ -387,6 +404,8 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+
+
 @app.post("/addusers")
 async def create_users(file: UploadFile = File(...)):
     try:
@@ -433,3 +452,176 @@ async def create_users(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="An error occurred while processing the file")
+
+
+
+
+@app.post('/addElection')
+def addElection(data: ElectionData):
+    # Extract data from the request
+    title = data.title
+    electionId = data.electionId
+    surveyorStartDate = data.surveyorStartDate
+    surveyorEndDate = data.surveyorEndDate
+    resultDate = data.resultDate
+    created_at = datetime.now().isoformat()
+
+    if not title or not electionId or not surveyorStartDate:
+        return JSONResponse(content={"error": "Missing data"}, status_code=400)
+    
+    election_ref = db.collection(ELECTION_COLLECTION)  
+    new_election_ref = election_ref.document()  
+    new_election_ref.set({
+        'electionId': title,
+        'electionName': electionId,
+        'surveyorStartDate': surveyorStartDate,
+        'surveyorEndDate': surveyorEndDate,
+        'resultDate': resultDate,
+        'created_at':created_at,
+        'isAllocated':False
+    })
+    logging.info(f"new_election_ref: {new_election_ref}")
+    # Return success message
+    return JSONResponse(content={"message": "Election Added successful"}, status_code=201)
+
+
+
+
+@app.get('/allelection')
+def allelection():
+    try:
+        # Fetch all documents from the collection
+        users_ref = db.collection(ELECTION_COLLECTION)
+        docs = users_ref.stream()
+        logging.info(f"users_ref: {users_ref}")
+
+        # Extract document data
+        all_elections = []
+        for doc in docs:
+            election_data = doc.to_dict()  # Get document data as a dictionary
+            election_data["id"] = doc.id    # Add document ID to the data
+            all_elections.append(election_data)
+
+        return JSONResponse(content=all_elections, status_code=200)
+    
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve election data"}, status_code=500)
+
+
+
+
+def get_userName(userid: str):
+    try:
+        users_ref = db.collection(USERS_COLLECTION).document(userid)
+        user_doc = users_ref.get()  # Fetch the document
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Convert document data to a dictionary
+        user_data = user_doc.to_dict()
+        return user_data['username']
+     
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+
+@app.get('/get_surveyor')
+def get_surveyor():
+    try:
+        users_ref = db.collection(USERS_COLLECTION)
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id  # This is the user ID
+            
+            # Check if the user is a surveyor
+            if user_data.get('selectedMode') == 'surveyor':
+                # Only append the 'id' and 'username' fields
+                users.append({
+                    'userId': user_data['id'],
+                    'userName': user_data.get('username')  # Ensure 'username' exists in the data
+                })
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+
+@app.get('/get_allocation_list')
+def get_allocation_list():
+    try:
+        users_ref = db.collection(ALLOCATE_COLLECTION)  
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id  
+            username = get_userName(user_data['surveyorId'])
+            users.append({
+                'userId': user_data['id'],
+                'surveyorName': username,
+                'precintList': user_data['precintList'],
+                'electionId': user_data['electionId'],
+                'created_at': user_data['created_at'],
+            })
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+@app.get('/get_election_list')
+def get_election_list():
+    try:
+        users_ref = db.collection(ELECTION_COLLECTION)  
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id 
+            if user_data['isAllocated'] == False:
+                users.append({
+                    'id': user_data['id'],
+                    'electionId': user_data.get('electionId') ,
+                    'electionName': user_data.get('electionName') 
+                })
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+
+@app.post('/allocateInfo')
+def allocateInfo(data: AllocateData):
+    # Extract data from the request
+    electionId = data.electionId
+    surveyorId = data.surveyorId
+    precintList = data.precintList
+    created_at = datetime.now().isoformat()
+
+    
+    users_ref = db.collection(ALLOCATE_COLLECTION)  
+    new_user_ref = users_ref.document()  
+    new_user_ref.set({
+        'electionId': electionId,
+        'surveyorId': surveyorId,
+        'precintList': precintList,
+        'created_at': created_at
+    })
+    
+    # Return success message
+    return JSONResponse(content={"message": "Allocated Successfully"}, status_code=201)
+
+#uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
+
+
