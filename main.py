@@ -541,7 +541,7 @@ def get_surveyor():
             user_data['id'] = doc.id  # This is the user ID
             
             # Check if the user is a surveyor
-            if user_data.get('selectedMode') == 'surveyor':
+            if user_data.get('selectedMode').lower() == 'surveyor':
                 # Only append the 'id' and 'username' fields
                 users.append({
                     'userId': user_data['id'],
