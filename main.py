@@ -12,6 +12,7 @@ import logging
 import pdfplumber
 import re
 import nltk
+from typing import Optional
 from werkzeug.utils import secure_filename
 app = FastAPI()
 
@@ -45,6 +46,7 @@ class SignupData(BaseModel):
     password: str
     selectedMode: str
     contact: str
+    candidateId: Optional[str] = None 
 
 class ElectionData(BaseModel):
     title: str
@@ -58,30 +60,37 @@ class AllocateData(BaseModel):
     precintList: str
 
 
-
 @app.post('/signin')
 def signin(data: SigninData):
     # Extract data from the request
     email = data.email
     password = data.password
+    print(f"User signing in: {email}")
     
     if not email or not password:
         return JSONResponse(content={"error": "Missing data"}, status_code=400)
     
     # Fetch user from Firestore
-    users_ref = db.collection(USERS_COLLECTION)  # Assuming collection name is 'users'
-    query = users_ref.where(u'email', u'==', email).limit(1).get()
+    users_ref = db.collection(USERS_COLLECTION)
+    query = users_ref.where('email', '==', email).limit(1).get()
 
     if not query:
         return JSONResponse(content={"error": "User not found"}, status_code=404)
     
     user_doc = query[0].to_dict()
-
+    
     # Check if the provided password matches the stored password
     if user_doc.get('password') == password:
-        return JSONResponse(content={"message": "Sign in successful", "user": user_doc}, status_code=200)
+        # Return only the username and ID
+        user_response = {
+            "id": query[0].id,  # Firestore document ID
+            "username": user_doc.get('username'),
+            "selectedMode": user_doc.get('selectedMode')
+        }
+        return JSONResponse(content={"message": "Sign in successful", "user": user_response}, status_code=200)
     else:
         return JSONResponse(content={"error": "Invalid credentials"}, status_code=401)
+
 
 @app.post('/signup')
 def signup(data: SignupData):
@@ -91,20 +100,29 @@ def signup(data: SignupData):
     password = data.password
     selectedMode = data.selectedMode
     contact = data.contact
-    
+    candidateId = data.candidateId
+
     if not username or not email or not password:
-        return JSONResponse(content={"error": "Missing data"}, status_code=400)
-    
-    users_ref = db.collection(USERS_COLLECTION)  
-    new_user_ref = users_ref.document()  
-    new_user_ref.set({
+        raise HTTPException(status_code=400, detail="Missing data")
+
+    # Prepare user data dictionary
+    user_data = {
         'username': username,
         'email': email,
         'password': password,
         'contact': contact,
-        'selectedMode': selectedMode
-    })
-    
+        'selectedMode': selectedMode,
+    }
+
+    # Add candidateId if it exists
+    if candidateId:
+        user_data['candidateId'] = candidateId
+
+    # Store the new user in the database
+    users_ref = db.collection(USERS_COLLECTION)  
+    new_user_ref = users_ref.document() 
+    new_user_ref.set(user_data)
+
     # Return success message
     return JSONResponse(content={"message": "Signup successful"}, status_code=201)
 
@@ -112,7 +130,7 @@ def signup(data: SignupData):
 @app.get('/users')
 def get_all_users():
     try:
-        users_ref = db.collection(USERS_COLLECTION)  # Replace with your actual collection name
+        users_ref = db.collection(USERS_COLLECTION)  
         docs = users_ref.stream()
 
         users = []
@@ -509,8 +527,22 @@ def allelection():
         return JSONResponse(content={"error": "Failed to retrieve election data"}, status_code=500)
 
 
+@app.get('/get_userDetails/{userid}')
+def get_userDetails(userid: str):
+    try:
+        users_ref = db.collection(USERS_COLLECTION).document(userid)
+        user_doc = users_ref.get()  # Fetch the document
 
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="User not found")
 
+        user_data = user_doc.to_dict()
+        return user_data
+     
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
 def get_userName(userid: str):
     try:
         users_ref = db.collection(USERS_COLLECTION).document(userid)
@@ -594,7 +626,8 @@ def get_election_list():
                     'electionId': user_data.get('electionId') ,
                     'electionName': user_data.get('electionName') 
                 })
-
+            else: 
+                return JSONResponse(content=users, status_code=200)
         return JSONResponse(content=users, status_code=200)
     except Exception as e:
         print(f"Error: {e}")
@@ -622,6 +655,47 @@ def allocateInfo(data: AllocateData):
     # Return success message
     return JSONResponse(content={"message": "Allocated Successfully"}, status_code=201)
 
+@app.get('/get_candidate')
+def get_candidate():
+    try:
+        users_ref = db.collection(USERS_COLLECTION)
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id  # This is the user ID
+            
+            # Check if the user is a surveyor
+            if user_data.get('selectedMode').lower() == 'candidate':
+                # Only append the 'id' and 'username' fields
+                users.append({
+                    'userId': user_data['id'],
+                    'userName': user_data.get('username')  
+                })
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+@app.get('/get_allocated_list')
+def get_allocated_list():
+    try:
+        users_ref = db.collection(ALLOCATE_COLLECTION)
+        docs = users_ref.stream()
+
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id  # This is the user ID
+            users.append(user_data)
+          
+
+        return JSONResponse(content=users, status_code=200)
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
 #uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 
