@@ -696,6 +696,100 @@ def get_allocated_list():
     except Exception as e:
         print(f"Error: {e}")
         return JSONResponse(content={"error": "Failed to retrieve users"}, status_code=500)
+
+
+@app.get('/verifierCheck/{verifierId}/{documentId}')
+def verifierCheck(verifierId: str, documentId: str):
+    try:
+        # Reference to the document
+        users_ref = db.collection(ALLOCATE_COLLECTION).document(documentId)
+        
+        # Retrieve the document
+        doc = users_ref.get()
+
+        if not doc.exists:
+            return JSONResponse(content={"error": "Document not found"}, status_code=404)
+
+
+        users_ref.update({"verifierId": verifierId,"isOpen": True})
+
+        return JSONResponse(status_code=200, content={"message": "Verifier ID added successfully"})
+    
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to update the document"}, status_code=500)
+
+
+def getElectionDetails(electionId):
+    try:
+        # Query documents where electionId matches the given electionId
+        docs = db.collection(ELECTION_COLLECTION).where('electionId', '==', electionId).stream()
+        
+        # List to store election details
+        election_details = []
+
+        for doc in docs:
+            election_details.append(doc.to_dict())  # Convert each document to a dictionary and add to the list
+
+        # Return the election details or None if not found
+        return election_details if election_details else None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None  # Return None in case of an error
+def getVerifierName(verifierId):
+    try:
+        # Get the document by verifierId
+        doc_ref = db.collection(USERS_COLLECTION).document(verifierId)  # Use the correct reference
+        doc = doc_ref.get()  # Call get() on the document reference
+        
+        # Check if the document exists
+        if doc.exists:
+            return doc.to_dict().get('username')  # Return the 'username' field of the document
+        else:
+            return None  # Document not found
+    except Exception as e:
+        print(f"Error: {e}")
+        return None  # Return None in case of an error
+
+
+
+@app.get('/getVerifiedSurveyDetails/{surveyorId}/')
+def getVerifiedSurveyDetails(surveyorId: str):
+    try:
+        docs = db.collection(ALLOCATE_COLLECTION).where('isOpen', '==', True).where('surveyorId', '==', surveyorId).stream()
+
+        # List to store the details of documents
+        open_documents = []
+
+        for doc in docs:
+            doc_data = doc.to_dict()  # Convert document to dictionary
+            electionId = doc_data.get('electionId')
+            verifierId = doc_data.get('verifierId')
+
+            # Retrieve election details
+            election_details = getElectionDetails(electionId) or {}
+            verifier_name = getVerifierName(verifierId) or "Unknown Verifier"
+
+            # Combine the document data with election details and verifier name
+            combined_data = {
+                **doc_data,
+                "electionDetails": election_details,
+                "verifierName": verifier_name
+            }
+            open_documents.append(combined_data)  # Append the combined data to the list
+
+        # Return the combined list of open documents with details
+        if open_documents:
+            return JSONResponse(status_code=200, content={"openDocuments": open_documents})
+        else:
+            return JSONResponse(status_code=404, content={"message": "No open documents found for the given surveyor ID."})
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(content={"error": "Failed to retrieve documents"}, status_code=500)
+
+
+
 #uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 
