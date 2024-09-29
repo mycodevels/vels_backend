@@ -24,6 +24,7 @@ USERS_COLLECTION = "users"
 VOTERS_COLLECTION ="Voters"
 ELECTION_COLLECTION ="Election"
 ALLOCATE_COLLECTION ="allocate"
+SURVEY_COLLECTION ="Survey"
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +59,27 @@ class AllocateData(BaseModel):
     electionId: str
     surveyorId: str
     precintList: str
+
+class SurveyDetails(BaseModel):
+    electionId: str
+    surveyorId: str
+    precintList: str
+    userDocumentId: str
+    gender: str
+    age: str
+    dob: str
+    civil_status: str
+    code1: str
+    tag1: str
+    code2: str
+    tag2: str
+    code3: str
+    tag3: str
+    code4: str
+    tag4: str
+    candidateId: str
+    remarks: str
+    
 
 
 @app.post('/signin')
@@ -788,8 +810,192 @@ def getVerifiedSurveyDetails(surveyorId: str):
         print(f"Error: {e}")
         return JSONResponse(content={"error": "Failed to retrieve documents"}, status_code=500)
 
+@app.post("/surveys/")
+async def create_survey(survey: SurveyDetails):
+    # Prepare the data to be added to Firestore
+    survey_data = survey.dict()
+    survey_data['created_at'] = datetime.utcnow().isoformat()  # Add created_at timestamp
+
+    # Add the survey data to the Firestore collection
+    try:
+        db.collection(SURVEY_COLLECTION).add(survey_data)
+        return JSONResponse(content={"message": "Survey created successfully"}, status_code=201)
+    except Exception as e:
+        # Include the exception message and code in the response
+        return JSONResponse(
+            content={"detail": str(e), "code": 500},
+            status_code=500
+        )
 
 
+logging.basicConfig(level=logging.INFO)
+
+@app.get('/surveys/{surveyorId}/{electionId}/{precintNo}/')
+def getSurveyById(surveyorId: str,electionId: str,precintNo: str):
+    try:
+        # Check if surveyorId is valid
+        if not surveyorId:
+            raise HTTPException(status_code=400, detail="Invalid surveyor ID.")
+
+        # Fetch documents from Firestore using keyword arguments
+        docs = db.collection(SURVEY_COLLECTION).where('surveyorId', '==', surveyorId).where('electionId', '==', electionId).where('precintList', '==', precintNo).stream()
+
+        # Convert documents to a list of dictionaries
+        survey_data = []
+        for doc in docs:
+            doc_dict = doc.to_dict()
+            print(doc_dict)
+            if 'created_at' in doc_dict:
+                created_at = doc_dict['created_at']
+                print(created_at)
+            doc_dict['created_at'] = created_at.isoformat()
+            survey_data.append(doc_dict)
+
+        if not survey_data:
+            # If no surveys found, return 404
+            raise HTTPException(status_code=404, detail="No surveys found for this surveyor ID.")
+
+        # Return as JSON response with 200 OK status
+        return JSONResponse(content=survey_data, status_code=200)
+
+    except Exception as e:
+        logging.error(f"Error occurred: {e}")  # Log the error
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get('/excludeUserId/{surveyorId}/{electionId}/{precintNo}/')
+def getexcludeUserId(surveyorId: str,electionId: str,precintNo: str):
+    try:
+        # Check if surveyorId is valid
+        if not surveyorId:
+            raise HTTPException(status_code=400, detail="Invalid surveyor ID.")
+
+        # Fetch documents from Firestore using keyword arguments
+        docs = db.collection(SURVEY_COLLECTION).where('surveyorId', '==', surveyorId).where('electionId', '==', electionId).where('precintList', '==', precintNo).stream()
+
+        # Convert documents to a list of dictionaries
+        excluded_list = []
+        for doc in docs:
+            doc_dict = doc.to_dict()
+            excluded_list.append(doc_dict['userDocumentId'])
+
+        if not excluded_list:
+            # If no surveys found, return 404
+            raise HTTPException(status_code=404, detail="No surveys found for this surveyor ID.")
+
+        # Return as JSON response with 200 OK status
+        return JSONResponse(content=excluded_list, status_code=200)
+
+    except Exception as e:
+        logging.error(f"Error occurred: {e}")  # Log the error
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+    
+#get the updated details
+ 
+@app.get('/surveyData/{userDocumentId}')
+def surveyData(userDocumentId: str):
+    try:
+        docs = db.collection(SURVEY_COLLECTION).where('userDocumentId', '==', userDocumentId).stream()
+        excluded_list = []
+        
+        for doc in docs:
+            doc_dict = doc.to_dict()  # Convert each document to a dictionary
+            
+            # Check if 'created_at' is in the document
+            if 'created_at' in doc_dict:
+                created_at = doc_dict['created_at']
+                username = get_userName(doc_dict['candidateId'])
+                
+                # Format the datetime to a readable string
+                formatted_datetime = created_at.strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+                doc_dict['created_at'] = formatted_datetime  # Update the dictionary with the formatted datetime
+                doc_dict['candidate_name'] = username  # Add username to the dictionary
+            
+            excluded_list.append(doc_dict)  # Append the document to the list
+        print(excluded_list)
+        return JSONResponse(content=excluded_list, status_code=200)
+
+    except Exception as e:
+        print(f"Error retrieving survey data: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while retrieving survey data.")
+        
+        
+        
+
+        
+        
+from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
+from dateutil import parser
+@app.get('/surveyElectionData')
+async def surveyElectionData():
+    try:
+        # Get all documents in the collection
+        docs = db.collection(SURVEY_COLLECTION).stream()
+        
+        # Convert documents to a list of dictionaries with formatted datetime
+        survey_data = []
+        for doc in docs:
+            doc_dict = doc.to_dict()
+            if 'created_at' in doc_dict and isinstance(doc_dict['created_at'], datetime):
+                formatted_datetime = doc_dict['created_at'].strftime('%Y-%m-%d %H:%M:%S.%f %Z')
+                doc_dict['created_at'] = formatted_datetime
+            survey_data.append(doc_dict)
+
+        # Calculate candidate vote counts
+        candidate_votes = defaultdict(int)
+        for entry in survey_data:
+            candidate_votes[entry['candidateId']] += 1
+
+        # Calculate weekly votes
+        weekly_votes = defaultdict(lambda: defaultdict(int))
+        for entry in survey_data:
+            created_at_str = entry['created_at']
+            
+            # Clean the string to handle different formats
+            if 'UTC' in created_at_str:
+                created_at_str = created_at_str.replace(' UTC', '')  # Remove ' UTC'
+            created_at = parser.isoparse(created_at_str)
+
+            week_start = created_at - timedelta(days=created_at.weekday())  # Get start of the week
+            week_end = week_start + timedelta(days=6)  # Calculate end of the week
+            week_str = week_start.strftime('%Y-%m-%d')
+            candidate_id = entry['candidateId']
+
+            # Increment the count for the specific candidate in that week
+            weekly_votes[week_str][candidate_id] += 1
+       
+        # Format results for weekly votes
+        weekly_votes_list = [
+            {
+                "week_start": week_start.strftime('%Y-%m-%d'),
+                "week_end": week_end.strftime('%Y-%m-%d'),
+                "candidates": [
+                    {"candidateId": candidate, "votes": count,"username": get_userName(candidate)} for candidate, count in candidates.items()
+                ]
+            }
+            for week_str, candidates in weekly_votes.items()
+            for week_start in [parser.isoparse(week_str)]  # Convert week_str back to datetime
+            for week_end in [week_start + timedelta(days=6)]  # Calculate week end
+        ]
+       
+        # Format results for candidate votes
+        candidate_votes_list = [{"candidateId": candidate,"username": get_userName(candidate), "votes": count} for candidate, count in candidate_votes.items()]
+
+        # Return the response as JSON
+        return JSONResponse(content={
+          
+            "candidate_votes": candidate_votes_list,
+            "weekly_votes": weekly_votes_list
+        }, status_code=200)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+        
+        
 #uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 
