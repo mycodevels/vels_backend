@@ -6,3 +6,4 @@ nltk
 uvicorn
 werkzeug
 python-multipart
+dateutil
