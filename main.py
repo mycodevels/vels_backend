@@ -920,8 +920,6 @@ def surveyData(userDocumentId: str):
         print(f"Error retrieving survey data: {e}")
         raise HTTPException(status_code=500, detail="An error occurred while retrieving survey data.")
         
-        
-        
 
         
         
@@ -994,8 +992,54 @@ async def surveyElectionData():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-        
-        
+
+@app.get('/get_assistantDetails/{userid}')
+def get_assistantDetails(userid: str):
+    try:
+        users_ref = db.collection(USERS_COLLECTION).where('candidateId', '==', userid).stream()
+
+        # Since `stream()` returns a generator, iterate over it
+        user_data = None
+        user_id = None
+        for user_doc in users_ref:
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                user_id = user_doc.id  # Get document ID
+                break  # Exit after finding the first match
+
+        if user_data is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Return both the document ID and data
+        return {"id": user_id, "data": user_data}
+
+    except Exception as e:
+        print(f"Error retrieving survey data: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while retrieving get_assistantDetails data.")
+
+@app.get('/assistant_request/{userid}/{status}')
+def get_assistantDetails(userid: str, status: str):
+    try:
+        # Reference the document for the given userid
+        user_ref = db.collection(USERS_COLLECTION).document(userid)
+
+        # Update the document by adding or updating the 'status' field
+        user_ref.update({'status': status})
+
+        # Retrieve the updated user document
+        updated_user = user_ref.get().to_dict()
+
+        # Return a success message and updated user data
+        return JSONResponse(content={"message": "Success"}, status_code=200)
+
+    except Exception as e:
+        print(f"Error retrieving or updating assistant details: {e}")
+        # Raise HTTP 500 error if something goes wrong
+        raise HTTPException(status_code=500, detail="An error occurred while retrieving get_assistantDetails data.")
+    
+    
+    
+    
 #uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 
