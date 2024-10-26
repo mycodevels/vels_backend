@@ -1037,9 +1037,254 @@ def get_assistantDetails(userid: str, status: str):
         # Raise HTTP 500 error if something goes wrong
         raise HTTPException(status_code=500, detail="An error occurred while retrieving get_assistantDetails data.")
     
-    
-    
-    
+
+@app.get('/getGraphDetails/')
+def getGraphDetails():
+    try:
+        # Fetch all documents from the SURVEY_COLLECTION
+        survey_ref = db.collection(SURVEY_COLLECTION).stream()
+        survey_data = []
+        
+        # Loop through each document in the collection
+        for survey in survey_ref:
+            survey_dict = survey.to_dict()
+            
+            # Extract necessary information
+            userdocumentId = survey_dict.get('userDocumentId')
+            candidateId = survey_dict.get('candidateId')
+            electionId = survey_dict.get('electionId')
+            precintList = survey_dict.get('precintList')
+            
+            # Fetch voter data
+            voter_ref = db.collection(VOTERS_COLLECTION).document(precintList).collection('voters').document(userdocumentId)
+            voter_snapshot = voter_ref.get()
+            
+            if voter_snapshot.exists:
+                voter_data = voter_snapshot.to_dict()
+                
+                # Append data including voting information
+                survey_data.append({
+                    "userdocumentId": userdocumentId,
+                    "candidateId": candidateId,
+                    "electionId": electionId,
+                    "voterData": voter_data
+                })
+
+        # Transform data for Power BI
+        transformed_data = {}
+        
+        for entry in survey_data:
+            # Fetch candidate username
+            candidate_ref = db.collection(USERS_COLLECTION).document(entry["candidateId"]).get()
+            candidate_username = candidate_ref.to_dict().get("username", "Unknown") if candidate_ref.exists else "Unknown"
+
+            # Use candidateId, electionId, Province, City, and precintList to create a unique key
+            key = (entry["candidateId"], entry["electionId"], entry["voterData"]["Province"], entry["voterData"]["City"], precintList)
+            if key not in transformed_data:
+                transformed_data[key] = {
+                    "vote_count": 0,
+                    "candidate_username": candidate_username
+                }
+            transformed_data[key]["vote_count"] += 1  # Count votes
+
+        # Prepare the final response
+        final_response = []
+        for (candidateId, electionId, province, city, precintList), data in transformed_data.items():
+            final_response.append({
+                "candidateId": candidateId,
+                "electionId": electionId,
+                "Province": province,
+                "City": city,
+                "VoteCount": data["vote_count"],
+                "CandidateUsername": data["candidate_username"],
+                "PrecintList": precintList
+            })
+
+        # Return the transformed data
+        return JSONResponse(content=final_response)
+
+    except Exception as e:
+        logging.error(f"Error retrieving surveyor details: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving surveyor details")
+
+
+from datetime import datetime, timedelta
+from collections import defaultdict
+from fastapi.responses import JSONResponse
+from fastapi import HTTPException
+from google.cloud.firestore import DocumentSnapshot
+
+@app.get('/getWeeklyReportprecint/')
+def getWeeklyReportprecint():
+    try:
+        # Fetch all documents from the SURVEY_COLLECTION
+        survey_ref = db.collection(SURVEY_COLLECTION).stream()
+        survey_data = []
+        
+        # Loop through each document in the collection
+        for survey in survey_ref:
+            survey_dict = survey.to_dict()
+            
+            # Extract necessary information
+            userdocumentId = survey_dict.get('userDocumentId')
+            candidateId = survey_dict.get('candidateId')
+            created_at = survey_dict.get('created_at')  # This is likely a Timestamp object
+            precintList = survey_dict.get('precintList')
+            
+            # Print the created_at for debugging
+            print(f"Raw created_at: {created_at}, Type: {type(created_at)}")  # Log the raw value and type
+            
+            # Convert Firestore Timestamp to datetime object
+            if isinstance(created_at, DocumentSnapshot):
+                created_at_date = created_at.to_datetime()  # Use the Firestore Timestamp method
+                print(f"Converted created_at (from DocumentSnapshot): {created_at_date}")  # Log converted value
+            elif isinstance(created_at, datetime):
+                created_at_date = created_at  # If it's already a datetime
+                print(f"created_at is already a datetime: {created_at_date}")  # Log if it's already a datetime
+            else:
+                created_at_date = datetime.fromisoformat(created_at[:-1]) if isinstance(created_at, str) else None
+                print(f"created_at after fallback: {created_at_date}")  # Log fallback value
+
+            if created_at_date is None:
+                logging.error(f"created_at could not be converted for userDocumentId: {userdocumentId}")
+                continue  # Skip this entry if created_at is invalid
+            
+            # Append data including voting information
+            survey_data.append({
+                "userdocumentId": userdocumentId,
+                "candidateId": candidateId,
+                "created_at": created_at_date,
+                "precintList": precintList
+            })
+
+        # Group votes by week and candidate
+        weekly_votes = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'username': None, 'precintList': None}))
+        # {week: {candidateId: {'count': vote_count, 'username': username, 'precintList': precintList}}}
+        
+        for entry in survey_data:
+            # Determine the start of the week (Monday)
+            week_start = entry["created_at"] - timedelta(days=entry["created_at"].weekday())
+            week_str = week_start.strftime("%Y-W%W")  # ISO format for week
+            week_display = f"Week {week_start.isocalendar()[1]} of {week_start.year}"  # More readable format
+
+            # Count the vote for the candidate
+            candidate_id = entry["candidateId"]
+            weekly_votes[week_display][candidate_id]['count'] += 1
+            
+            # Fetch candidate username
+            candidate_ref = db.collection(USERS_COLLECTION).document(candidate_id).get()
+            candidate_username = candidate_ref.to_dict().get("username", "Unknown") if candidate_ref.exists else "Unknown"
+            weekly_votes[week_display][candidate_id]['username'] = candidate_username
+            
+            # Store the precintList
+            if weekly_votes[week_display][candidate_id]['precintList'] is None:
+                weekly_votes[week_display][candidate_id]['precintList'] = entry["precintList"]
+            else:
+                # If there are multiple precincts, you could choose to store them as a list or a string.
+                # Here, we'll keep it simple by ensuring it's the same if not already set.
+                weekly_votes[week_display][candidate_id]['precintList'] = entry["precintList"]
+
+        # Prepare the final response
+        final_response = []
+        for week, candidates in weekly_votes.items():
+            for candidateId, data in candidates.items():
+                final_response.append({
+                    "Week": week,
+                    "CandidateId": candidateId,
+                    "CandidateUsername": data['username'],
+                    "VoteCount": data['count'],
+                    "PrecintList": data['precintList']  # Include the precintList
+                })
+
+        # Return the transformed data
+        return JSONResponse(content=final_response)
+
+    except Exception as e:
+        logging.error(f"Error retrieving weekly report: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving weekly report")
+
+
+
+@app.get('/leader_graph_details/')
+def leader_graph_details():
+    try:
+        # Fetch all documents from the SURVEY_COLLECTION
+        survey_ref = db.collection(SURVEY_COLLECTION).stream()
+        survey_data = []
+        
+        # Loop through each document in the collection
+        for survey in survey_ref:
+            survey_dict = survey.to_dict()
+            
+            # Extract necessary information
+            userdocumentId = survey_dict.get('userDocumentId')
+            userage = survey_dict.get('age')
+            user_gender = survey_dict.get('gender')
+            candidateId = survey_dict.get('candidateId')
+            electionId = survey_dict.get('electionId')
+            precintList = survey_dict.get('precintList')
+            
+            # Fetch voter data
+            voter_ref = db.collection(VOTERS_COLLECTION).document(precintList).collection('voters').document(userdocumentId)
+            voter_snapshot = voter_ref.get()
+            
+            if voter_snapshot.exists:
+                voter_data = voter_snapshot.to_dict()
+                
+                # Append data including voting information
+                survey_data.append({
+                    "userdocumentId": userdocumentId,
+                    "candidateId": candidateId,
+                    "electionId": electionId,
+                    "voterData": voter_data,
+                    "userage": userage,
+                    "user_gender": user_gender  # Include user gender
+                })
+
+        # Transform data for Power BI
+        transformed_data = {}
+        
+        for entry in survey_data:
+            # Fetch candidate username
+            candidate_ref = db.collection(USERS_COLLECTION).document(entry["candidateId"]).get()
+            candidate_username = candidate_ref.to_dict().get("username", "Unknown") if candidate_ref.exists else "Unknown"
+
+            # Use candidateId, electionId, Province, City, and precintList to create a unique key
+            key = (entry["candidateId"], entry["electionId"], entry["voterData"]["Province"], entry["voterData"]["City"], precintList)
+            if key not in transformed_data:
+                transformed_data[key] = {
+                    "vote_count": 0,
+                    "candidate_username": candidate_username,
+                    "userages": [],  # Store user ages for this key
+                    "user_genders": []  # Store user genders for this key
+                }
+            transformed_data[key]["vote_count"] += 1  # Count votes
+            transformed_data[key]["userages"].append(entry["userage"])  # Collect user ages
+            transformed_data[key]["user_genders"].append(entry["user_gender"])  # Collect user genders
+
+        # Prepare the final response
+        final_response = []
+        for (candidateId, electionId, province, city, precintList), data in transformed_data.items():
+            final_response.append({
+                "candidateId": candidateId,
+                "electionId": electionId,
+                "Province": province,
+                "City": city,
+                "VoteCount": data["vote_count"],
+                "CandidateUsername": data["candidate_username"],
+                "PrecintList": precintList,
+                "UserAges": data["userages"],  # Include user ages
+                "UserGenders": data["user_genders"]  # Include user genders
+            })
+
+        # Return the transformed data
+        return JSONResponse(content=final_response)
+
+    except Exception as e:
+        logging.error(f"Error retrieving surveyor details: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving surveyor details")
+
+
 #uvicorn app_api:app --host 0.0.0.0 --port 8000 --proxy-headers
 
 
